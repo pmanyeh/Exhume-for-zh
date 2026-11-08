@@ -10,6 +10,7 @@
 #include <windows.h>
 
 int port_gog_registry(int (*fn)(const char *id, const char *name, const char *path, void *ctx), void *ctx);
+int port_steam_root(char *out, unsigned outsz);
 
 static int reg_str(HKEY k, const char *name, char *out, DWORD outsz)
 {
@@ -49,6 +50,26 @@ int port_gog_registry(int (*fn)(const char *id, const char *name, const char *pa
         RegCloseKey(games);
     }
     return r;
+}
+/* Steam's folder, from the registry: the user's SteamPath (written with forward slashes), else the
+   install's InstallPath. 0 with it in out. */
+int port_steam_root(char *out, unsigned outsz)
+{
+    static const struct { HKEY root; const char *key; const char *value; } keys[] = {
+        { HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath" },
+        { HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Valve\\Steam", "InstallPath" },
+        { HKEY_LOCAL_MACHINE, "SOFTWARE\\Valve\\Steam", "InstallPath" },
+    };
+    size_t i;
+    for (i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        HKEY k;
+        int r;
+        if (RegOpenKeyExA(keys[i].root, keys[i].key, 0, KEY_READ, &k) != ERROR_SUCCESS) continue;
+        r = reg_str(k, keys[i].value, out, (DWORD)outsz);
+        RegCloseKey(k);
+        if (r == 0 && out[0]) return 0;
+    }
+    return -1;
 }
 #else
 typedef int gogreg_unused;      /* ISO C wants a translation unit to declare something */

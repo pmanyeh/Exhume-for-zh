@@ -71,7 +71,9 @@ static int mkdirs(const char *p)
     for (s = buf + 1; *s; s++) {
         if (*s == '/') {
             *s = 0;
-            if (!is_dir(buf) && mkdir(buf, 0755) != 0 && errno != EEXIST) return -1;
+            /* a drive ("C:") is not made: on Windows stat and mkdir take it as that drive's current
+               folder, which fails when the program runs from another drive (as gamedir.c's mkdirs) */
+            if (!is_dir(buf) && mkdir(buf, 0755) != 0 && errno != EEXIST && !(s == buf + 2 && buf[1] == ':')) return -1;
             *s = '/';
         }
     }

@@ -145,6 +145,8 @@ const char *port_game_refused(void);
 int port_config_get(const char *home, const char *key, char *out, size_t outsz);
 int port_config_set(const char *home, const char *key, const char *value);
 int port_gog_registry(int (*fn)(const char *id, const char *name, const char *path, void *ctx), void *ctx);
+/* Windows: Steam's folder from the registry (sys/gogreg.c); 0 with it in out. */
+int port_steam_root(char *out, unsigned outsz);
 
 /* The emulated VGA (gfx/vga.c). */
 void vga_outb(unsigned port, uint8_t v);

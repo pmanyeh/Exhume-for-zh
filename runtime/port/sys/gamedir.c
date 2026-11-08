@@ -11,7 +11,8 @@
    levels into any folder there whose name has one of PORT_GAME_HINTS in it.
 
    GOG's Mac and Windows releases of DOS games often keep the game inside a CD image, game.gog
-   (an ISO 9660 image, which DOSBox mounts as D:). Where the search finds only such an image
+   (an ISO 9660 image, which DOSBox mounts as D:); Steam's releases of the same games ship it as
+   game.bin, and port_find_game also looks in Steam's libraries (steam_search). Where the search finds only such an image
    with PORT_GAME_IMAGE_FOLDER and PORT_GAME_EXE in it, that folder is copied out of it once
    into gog-cd/PORT_GAME_FOLDER in the port's home directory, and that is the game directory.
    The image is read, never changed.
@@ -259,14 +260,15 @@ static int extract_iso(const char *iso, const char *home, char *out, size_t outs
     return 0;
 }
 
-/* 1 if path is a CD image (.gog or .iso) with PORT_GAME_EXE in its PORT_GAME_IMAGE_FOLDER directory. */
+/* 1 if path is a CD image (.gog, .iso, or Steam's .bin) with PORT_GAME_EXE in its PORT_GAME_IMAGE_FOLDER
+   directory. Its contents decide: a .bin that is not an ISO 9660 image is not one. */
 static int iso_has_game(const char *path)
 {
     const char *dot = strrchr(path, '.');
     uint32_t e, s;
     FILE *f;
     int ok;
-    if (!dot || (strcasecmp(dot, ".gog") && strcasecmp(dot, ".iso"))) return 0;
+    if (!dot || (strcasecmp(dot, ".gog") && strcasecmp(dot, ".iso") && strcasecmp(dot, ".bin"))) return 0;
     if (!(f = fopen(path, "rb"))) return 0;
     ok = iso_game(f, &e, &s) == 0;
     fclose(f);
@@ -408,6 +410,77 @@ static int gog_registry(const char *home, char *out, size_t outsz)
 }
 #endif
 
+/* Steam: its own folder (on Windows from the registry, sys/gogreg.c) and the libraries its
+   steamapps/libraryfolders.vdf lists ("path" values, with \\ for \). In each library's
+   steamapps/common, a folder whose name looks like the game is searched as GOG's roots are. */
+static int steam_common(const char *lib, int iso, const char *home, char *out, size_t outsz)
+{
+    char common[MAXP], sub[MAXP];
+    DIR *d;
+    struct dirent *e;
+    int found = 0;
+    if (snprintf(common, sizeof common, "%s/steamapps/common", lib) >= (int)sizeof common || !(d = opendir(common))) return 0;
+    while (!found && (e = readdir(d)) != NULL)
+        if (e->d_name[0] != '.' && looks_like_game(e->d_name)
+            && snprintf(sub, sizeof sub, "%s/%s", common, e->d_name) < (int)sizeof sub && is_dir(sub))
+            found = search(sub, 4, iso, home, out, outsz);
+    closedir(d);
+    return found;
+}
+
+static int steam_library(const char *steam, int iso, const char *home, char *out, size_t outsz)
+{
+    char vdf[MAXP], lib[MAXP], *text, *p;
+    FILE *f;
+    long n;
+    int found;
+    if (steam_common(steam, iso, home, out, outsz)) return 1;
+    if (snprintf(vdf, sizeof vdf, "%s/steamapps/libraryfolders.vdf", steam) >= (int)sizeof vdf || !(f = fopen(vdf, "rb"))) return 0;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n <= 0 || n > 1 << 20 || !(text = malloc((size_t)n + 1))) { fclose(f); return 0; }
+    n = (long)fread(text, 1, (size_t)n, f);
+    fclose(f);
+    text[n] = 0;
+    found = 0;
+    for (p = text; !found && (p = strstr(p, "\"path\"")) != NULL; ) {
+        size_t k = 0;
+        p += 6;
+        while (*p && *p != '"') p++;
+        if (!*p) break;
+        for (p++; *p && *p != '"' && k < sizeof lib - 1; p++) {
+            if (*p == '\\' && p[1]) p++;
+            lib[k++] = *p;
+        }
+        lib[k] = 0;
+        if (k && strcasecmp(lib, steam)) found = steam_common(lib, iso, home, out, outsz);
+    }
+    free(text);
+    return found;
+}
+
+static int steam_search(int iso, const char *home, char *out, size_t outsz)
+{
+    static const char *const steams[] = {
+#if defined(__APPLE__)
+        "~/Library/Application Support/Steam",
+#elif defined(_WIN32)
+        "$ProgramFiles(x86)/Steam", "$ProgramFiles/Steam",
+#else
+        "~/.steam/steam", "~/.local/share/Steam",
+#endif
+    };
+    char root[MAXP];
+    size_t i;
+#ifdef _WIN32
+    if (port_steam_root(root, sizeof root) == 0 && steam_library(root, iso, home, out, outsz)) return 1;
+#endif
+    for (i = 0; i < sizeof steams / sizeof steams[0]; i++)
+        if (expand(steams[i], root, sizeof root) == 0 && steam_library(root, iso, home, out, outsz)) return 1;
+    return 0;
+}
+
 int port_find_game(const char *home, char *out, size_t outsz)
 {
     char path[MAXP], cfg[MAXP];
@@ -433,8 +506,9 @@ int port_find_game(const char *home, char *out, size_t outsz)
 #ifdef _WIN32
     if (gog_registry(home, out, outsz)) return 0;
 #endif
-    /* GOG's places: a game directory first, then a CD image */
-    for (iso = 0; iso < 2; iso++)
+    /* GOG's places and Steam's libraries: a game directory first, then a CD image */
+    for (iso = 0; iso < 2; iso++) {
+        if (steam_search(iso, home, out, outsz)) return 0;
         for (i = 0; i < sizeof roots / sizeof roots[0]; i++) {
             char root[MAXP], sub[MAXP];
             DIR *d;
@@ -448,6 +522,7 @@ int port_find_game(const char *home, char *out, size_t outsz)
             closedir(d);
             if (found) return 0;
         }
+    }
     return -1;
 }
 
